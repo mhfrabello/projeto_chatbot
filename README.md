@@ -1,87 +1,99 @@
-﻿# AI Language Tutor
+# Assistente de Chamados (RAG + Azure GPT-5)
 
-Aplicação simples em Streamlit para praticar conversação com IA local usando voz, transcrição automática e resposta em áudio.
+Chatbot em Streamlit que orienta colaboradores sobre qual chamado abrir
+(ou como resolver sozinho, quando existe um passo a passo) — com base numa
+base de conhecimento de documentos que você mantém na pasta `knowledge/`.
 
-## O que o projeto faz
+## Como funciona
 
-- recebe texto ou gravação de voz;
-- transcreve a fala com Whisper;
-- envia o contexto ao modelo do Ollama, mantendo o histórico da conversa;
-- responde naturalmente, no idioma que o usuário usar (livre, sem seletor de idioma/modo);
-- gera áudio da resposta com Edge TTS, com 3 vozes à escolha.
+```
+knowledge/*.md, *.txt, *.pdf
+        │
+        ▼
+document_service  →  chunk_service  →  embedding_service (Azure) → vector_store (FAISS)
+                                                                          │
+                                                                          ▼
+                        rag_service (busca contexto + monta prompt) → llm_service (GPT-5 Azure)
+                                                                          │
+                                                                          ▼
+                                                                    app.py (Streamlit)
+```
 
-## Estrutura do projeto
+A base é reprocessada (lida, chunkada, embedada e indexada) toda vez que o
+app inicia — não há cache em disco. Isso é intencional, pra manter simples:
+edite os arquivos em `knowledge/`, reinicie o app (ou clique em "Recarregar
+base de conhecimento" na barra lateral) e pronto.
 
-- app.py: versão final e completa da aplicação;
-- legacy/: versões antigas e arquivos de referência;
-- pyproject.toml: dependências e metadados do projeto;
-- uv.lock: lockfile usado pelo uv;
+## Setup
 
-## Requisitos
+1. Crie um ambiente virtual e instale as dependências:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # no Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-- Python 3.10+
-- Ollama instalado e em execução
-- Modelo do Ollama disponível: qwen2.5:3b
-- Microfone para gravação de voz
+2. Copie `.env.example` para `.env` e preencha com os dados do seu recurso
+   Azure OpenAI:
+   ```bash
+   cp .env.example .env
+   ```
+   Você vai precisar de:
+   - `AZURE_OPENAI_ENDPOINT` — endpoint do recurso (ex: `https://meu-recurso.openai.azure.com`)
+   - `AZURE_OPENAI_KEY` — chave de API (Azure AI Foundry / Azure OpenAI Studio > Keys and Endpoint)
+   - `AZURE_CHAT_DEPLOYMENT` — nome do **deployment** do GPT-5 (não é "gpt-5" necessariamente,
+     é o nome que você deu ao deployment ao criá-lo)
+   - `AZURE_EMBEDDING_DEPLOYMENT` — nome do deployment de um modelo de embedding
+     (ex: `text-embedding-3-small`). Você precisa criar esse deployment separadamente
+     no Azure, mesmo usando a mesma chave/endpoint do chat.
 
-## Instalação
+3. Coloque seus documentos de procedimentos em `knowledge/` (já tem 3 exemplos
+   lá: instalação de programas, reset de senha e problema de equipamento —
+   edite ou substitua pelos seus).
 
-1. Instale as dependências com uv:
+4. Rode o app:
+   ```bash
+   streamlit run app.py
+   ```
 
-   uv sync
+## Estrutura
 
-2. Rode a aplicação com uv:
+```
+app.py                          # página única de chat (Streamlit)
+config/
+  settings.py                   # variáveis de ambiente
+services/
+  azure_client.py                # cliente Azure OpenAI (chat + embedding)
+  llm_service.py                 # chamada ao GPT-5
+  embedding_service.py           # geração de embeddings
+  document_service.py            # leitura de .md/.txt/.pdf da pasta knowledge/
+  chunk_service.py               # quebra de texto em chunks (com overlap)
+  vector_store.py                # índice FAISS em memória
+  knowledge_base.py              # monta a base completa (documentos → índice)
+  rag_service.py                 # busca contexto + monta prompt + chama o LLM
+knowledge/                      # seus documentos de procedimentos (.md/.txt/.pdf)
+```
 
-   uv run streamlit run app.py
+## Escrevendo bons documentos de conhecimento
 
-Alternativa com pip puro a partir do pyproject:
+Cada arquivo em `knowledge/` deve ser focado num tipo de solicitação. Sugestão
+de estrutura (veja os exemplos já incluídos):
 
-pip install -e .
+```markdown
+# Título do problema/solicitação
 
-## Preparando o Ollama
+## Você pode resolver sozinho (se aplicável)
+Passo a passo numerado.
 
-Antes de abrir a aplicação, baixe o modelo necessário:
+## Quando abrir chamado
+Categoria do chamado, link, quais informações incluir.
+```
 
-ollama pull qwen2.5:3b
+Isso ajuda o modelo a responder de forma consistente: "dá pra resolver
+sozinho, aqui está o passo a passo" ou "abra o chamado X, aqui está o link".
 
-E confirme que o serviço está rodando:
+## Ajustando o comportamento do bot
 
-ollama list
-
-## Executando a aplicação
-
-Com uv:
-
-uv run streamlit run app.py
-
-Ou, se estiver em um ambiente já ativado com as dependências instaladas:
-
-streamlit run app.py
-
-## Observações importantes
-
-- A aplicação depende do Ollama local para o modelo de linguagem.
-- A transcrição usa faster-whisper e trabalha melhor em máquinas com CPU razoável.
-- O áudio da resposta é gerado por Edge TTS e pode demorar um pouco conforme o texto.
-- O app não tem seletor de idioma nem "modo de conversa": a IA responde livremente no idioma que você usar, misturando português e inglês naturalmente se for o caso.
-- O projeto foi reorganizado com a versão final em app.py e arquivos anteriores em legacy/ para manter a estrutura mais limpa.
-
-## Solução de problemas comuns
-
-### Modelo não encontrado
-
-Se a aplicação mostrar que o modelo não foi encontrado, rode:
-
-ollama pull qwen2.5:3b
-
-### Ollama não está funcionando
-
-Verifique se o Ollama está iniciado localmente e se o daemon está ativo.
-
-### Erro ao gerar áudio
-
-O TTS pode falhar dependendo da rede ou do ambiente. A aplicação mostra aviso, mas a conversa continua em texto.
-
-## Licença
-
-Projeto pessoal para estudo e aprendizagem de IA, Streamlit, voz e processamento de linguagem.
+O prompt de sistema que define o tom e as regras de resposta está em
+`services/rag_service.py`, na constante `SYSTEM_PROMPT_TEMPLATE`. Ajuste
+ali se quiser mudar o estilo das respostas, adicionar regras, etc.

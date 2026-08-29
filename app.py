@@ -1,257 +1,75 @@
+# app.py
+"""
+Assistente de abertura de chamados — chat com RAG sobre a base de
+conhecimento em knowledge/.
+"""
 import streamlit as st
-import ollama
-import asyncio
-import edge_tts
-import io
-import time
 
-from faster_whisper import WhisperModel
+from services.knowledge_base import build_knowledge_base
+from services.rag_service import ask_question
+from config.settings import APP_TITLE, KNOWLEDGE_DIR
 
-
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
-
-st.set_page_config(
-    page_title="AI Language Tutor",
-    page_icon="🗣️",
-    layout="centered",
-)
-
-MODEL_NAME = "qwen2.5:3b"
-WHISPER_MODEL_SIZE = "small"
-MAX_HISTORY_MESSAGES = 10
-
-# Limita o tamanho das respostas para manter a conversa rápida.
-LLM_OPTIONS = {
-    "temperature": 0.6,
-    "top_p": 0.9,
-    "num_predict": 120,
-}
-
-SYSTEM_PROMPT = (
-    "You are a friendly, patient language conversation partner. "
-    "Chat naturally with the user in whatever language they use. "
-    "If they mix Portuguese and English, feel free to mix too. "
-    "Gently correct mistakes when relevant, keep answers short "
-    "(1-3 sentences) and ask a follow-up question to keep the "
-    "conversation going."
-)
-
-VOZES = {
-    "Emma (F, US)": "en-US-EmmaMultilingualNeural",
-    "Andrew (M, US)": "en-US-AndrewMultilingualNeural",
-    "Brian (M, US)": "en-US-BrianMultilingualNeural",
-}
+st.set_page_config(page_title=APP_TITLE, page_icon="🎫", layout="centered")
 
 
-# ============================================================
-# CARREGAMENTO DE RECURSOS (cacheado)
-# ============================================================
+@st.cache_resource(show_spinner="Carregando base de conhecimento...")
+def get_knowledge_base():
+    return build_knowledge_base()
 
-@st.cache_resource
-def carregar_whisper():
-    return WhisperModel(
-        WHISPER_MODEL_SIZE,
-        device="cpu",
-        compute_type="int8",
-        cpu_threads=6,
+
+def main():
+    st.title(f"🎫 {APP_TITLE}")
+    st.caption(
+        "Me conte o que você precisa fazer que eu te digo se dá pra resolver "
+        "sozinho ou qual chamado abrir."
     )
 
+    index, chunks, num_documentos = get_knowledge_base()
 
-whisper_model = carregar_whisper()
-
-
-# ============================================================
-# FUNÇÕES
-# ============================================================
-
-def transcrever_audio(audio_file) -> str:
-    segmentos, _ = whisper_model.transcribe(
-        audio_file,
-        beam_size=5,
-        vad_filter=True,
-    )
-    return " ".join(seg.text for seg in segmentos).strip()
-
-
-def gerar_resposta(historico) -> tuple[str, float]:
-    mensagens = [{"role": "system", "content": SYSTEM_PROMPT}]
-    mensagens.extend(historico[-MAX_HISTORY_MESSAGES:])
-
-    inicio = time.perf_counter()
-
-    resposta = ollama.chat(
-        model=MODEL_NAME,
-        messages=mensagens,
-        stream=False,
-        options=LLM_OPTIONS,
-        keep_alive="5m",
-    )
-
-    tempo = time.perf_counter() - inicio
-    texto = resposta["message"]["content"].strip()
-
-    return texto, tempo
-
-
-def traduzir_para_portugues(texto: str) -> str:
-    resposta = ollama.chat(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Translate the user's message to Brazilian Portuguese. "
-                    "Reply with ONLY the translation, nothing else."
-                ),
-            },
-            {"role": "user", "content": texto},
-        ],
-        stream=False,
-        options={"temperature": 0.3, "num_predict": 120},
-        keep_alive="5m",
-    )
-    return resposta["message"]["content"].strip()
-
-
-async def gerar_audio(texto: str, voz: str) -> bytes:
-    comunicador = edge_tts.Communicate(texto, voz)
-    buffer = io.BytesIO()
-
-    async for chunk in comunicador.stream():
-        if chunk["type"] == "audio":
-            buffer.write(chunk["data"])
-
-    return buffer.getvalue()
-
-
-def resetar_conversa():
-    st.session_state.messages = []
-    st.session_state.audio_pendente = None
-    st.session_state.turno = 0
-    st.session_state.ultimo_audio_processado = None
-
-
-# ============================================================
-# ESTADO INICIAL
-# ============================================================
-
-if "messages" not in st.session_state:
-    resetar_conversa()
-
-if "audio_pendente" not in st.session_state:
-    st.session_state.audio_pendente = None
-
-if "turno" not in st.session_state:
-    st.session_state.turno = 0
-
-if "ultimo_audio_processado" not in st.session_state:
-    st.session_state.ultimo_audio_processado = None
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-with st.sidebar:
-    st.title("🗣️ AI Language Tutor")
-    st.caption(f"Modelo: `{MODEL_NAME}` · Whisper: `{WHISPER_MODEL_SIZE}`")
-
-    st.divider()
-
-    voz_nome = st.selectbox("Voz", list(VOZES.keys()))
-    voz_id = VOZES[voz_nome]
-
-    st.divider()
-
-    if st.button("🗑️ Nova conversa", use_container_width=True):
-        resetar_conversa()
-        st.rerun()
-
-
-# ============================================================
-# HISTÓRICO NA TELA
-# ============================================================
-
-st.title("Pratique idiomas conversando")
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg["role"] == "assistant" and msg.get("traducao"):
-            st.caption(msg["traducao"])
-
-
-# ============================================================
-# INPUT (voz ou texto)
-# ============================================================
-
-audio_file = st.audio_input(
-    "Grave sua voz",
-    key=f"audio_input_{st.session_state.turno}",
-)
-
-prompt = st.chat_input("Ou digite algo...")
-
-user_input = None
-
-if audio_file is not None:
-    audio_bytes = audio_file.getvalue()
-
-    if audio_bytes != st.session_state.ultimo_audio_processado:
-        st.session_state.ultimo_audio_processado = audio_bytes
-
-        with st.spinner("Transcrevendo..."):
-            user_input = transcrever_audio(audio_file)
-
-if prompt:
-    user_input = prompt.strip()
-
-
-# ============================================================
-# PROCESSAMENTO DO TURNO
-# ============================================================
-
-if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
-
-    with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
-            resposta, tempo_llm = gerar_resposta(st.session_state.messages)
-
-        st.markdown(resposta)
-
-        with st.spinner("Traduzindo..."):
-            traducao = traduzir_para_portugues(resposta)
-
-        st.caption(traducao)
-        st.caption(f"LLM: {tempo_llm:.2f}s")
-
-        st.session_state.messages.append(
-            {"role": "assistant", "content": resposta, "traducao": traducao}
+    if num_documentos == 0:
+        st.warning(
+            f"Nenhum documento encontrado na pasta `{KNOWLEDGE_DIR}/`. "
+            "Adicione arquivos .md, .txt ou .pdf com os procedimentos e "
+            "reinicie o app."
         )
+        return
 
-        try:
-            with st.spinner("Gerando áudio..."):
-                inicio_tts = time.perf_counter()
-                audio_bytes = asyncio.run(gerar_audio(resposta, voz_id))
-                tempo_tts = time.perf_counter() - inicio_tts
+    with st.sidebar:
+        st.metric("Documentos carregados", num_documentos)
+        st.metric("Trechos indexados", len(chunks))
+        if st.button("🔄 Recarregar base de conhecimento"):
+            st.cache_resource.clear()
+            st.rerun()
+        st.divider()
+        if st.button("🗑️ Limpar conversa"):
+            st.session_state.messages = []
+            st.rerun()
 
-            st.session_state.audio_pendente = audio_bytes
-            st.caption(f"TTS: {tempo_tts:.2f}s")
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-        except Exception as e:
-            st.error(f"Erro ao gerar áudio: {e}")
+    for message in st.session_state.messages:
+        if message["role"] == "system":
+            continue
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-        st.session_state.turno += 1
-        st.rerun()
+    pergunta = st.chat_input("Ex: quero instalar um programa novo, o que eu faço?")
+
+    if pergunta:
+        with st.chat_message("user"):
+            st.markdown(pergunta)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Consultando a base de conhecimento..."):
+                resposta = ask_question(
+                    pergunta, index, chunks, st.session_state.messages
+                )
+            st.markdown(resposta)
+
+        st.session_state.messages.append({"role": "user", "content": pergunta})
+        st.session_state.messages.append({"role": "assistant", "content": resposta})
 
 
-# ============================================================
-# REPRODUÇÃO DE ÁUDIO
-# ============================================================
-
-if st.session_state.audio_pendente:
-    st.audio(st.session_state.audio_pendente, format="audio/mp3", autoplay=True)
-    st.session_state.audio_pendente = None
+if __name__ == "__main__":
+    main()
