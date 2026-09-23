@@ -26,9 +26,7 @@ AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embed
 
 # --- RAG ---
 KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "knowledge")
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
 TOP_K = int(os.getenv("TOP_K", "4"))
 
 # --- App ---
-APP_TITLE = os.getenv("APP_TITLE", "Assistente de Chamados")
+APP_TITLE = os.getenv("APP_TITLE", "Assistente de TI")
